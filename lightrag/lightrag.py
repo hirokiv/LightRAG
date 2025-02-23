@@ -479,6 +479,7 @@ class LightRAG:
         split_by_character: str | None = None,
         split_by_character_only: bool = False,
         ids: list[str] | None = None,
+        timestamp: datetime | None = None, # add timestamp
     ) -> None:
         """Sync Insert documents with checkpoint support
 
@@ -491,7 +492,7 @@ class LightRAG:
         """
         loop = always_get_an_event_loop()
         loop.run_until_complete(
-            self.ainsert(input, split_by_character, split_by_character_only, ids)
+            self.ainsert(input, split_by_character, split_by_character_only, ids, timestamp)
         )
 
     async def ainsert(
@@ -500,6 +501,7 @@ class LightRAG:
         split_by_character: str | None = None,
         split_by_character_only: bool = False,
         ids: list[str] | None = None,
+        timestamp: datetime | None = None, # add time stamp
     ) -> None:
         """Async Insert documents with checkpoint support
 
@@ -510,9 +512,9 @@ class LightRAG:
             split_by_character is None, this parameter is ignored.
             ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated
         """
-        await self.apipeline_enqueue_documents(input, ids)
+        await self.apipeline_enqueue_documents(input, ids, timestamp)
         await self.apipeline_process_enqueue_documents(
-            split_by_character, split_by_character_only
+            split_by_character, split_by_character_only, timestamp
         )
 
     def insert_custom_chunks(self, full_text: str, text_chunks: list[str]) -> None:
@@ -568,7 +570,7 @@ class LightRAG:
                 await self._insert_done()
 
     async def apipeline_enqueue_documents(
-        self, input: str | list[str], ids: list[str] | None
+        self, input: str | list[str], ids: list[str] | None, timestamp: datetime | None = None
     ) -> None:
         """
         Pipeline for Processing Documents
@@ -618,6 +620,7 @@ class LightRAG:
                 "status": DocStatus.PENDING,
                 "created_at": datetime.now().isoformat(),
                 "updated_at": datetime.now().isoformat(),
+                "timestamp": timestamp.isoformat() if timestamp else None,
             }
             for id_, content in unique_contents.items()
         }
@@ -642,6 +645,7 @@ class LightRAG:
         self,
         split_by_character: str | None = None,
         split_by_character_only: bool = False,
+        timestamp: datetime | None = None, # add timestamp arguments
     ) -> None:
         """
         Process pending documents by splitting them into chunks, processing
@@ -696,6 +700,7 @@ class LightRAG:
                         compute_mdhash_id(dp["content"], prefix="chunk-"): {
                             **dp,
                             "full_doc_id": doc_id,
+                            "timestamp": timestamp.isoformat() if timestamp else None,
                         }
                         for dp in self.chunking_func(
                             status_doc.content,
@@ -717,11 +722,12 @@ class LightRAG:
                                     "content_summary": status_doc.content_summary,
                                     "content_length": status_doc.content_length,
                                     "created_at": status_doc.created_at,
+                                    "timestamp": timestamp.isoformat() if timestamp else None,
                                 }
                             }
                         ),
                         self.chunks_vdb.upsert(chunks),
-                        self._process_entity_relation_graph(chunks),
+                        self._process_entity_relation_graph(chunks, timestamp),
                         self.full_docs.upsert(
                             {doc_id: {"content": status_doc.content}}
                         ),
@@ -739,6 +745,7 @@ class LightRAG:
                                     "content_length": status_doc.content_length,
                                     "created_at": status_doc.created_at,
                                     "updated_at": datetime.now().isoformat(),
+                                    "timestamp": timestamp.isoformat() if timestamp else None,
                                 }
                             }
                         )
@@ -754,6 +761,7 @@ class LightRAG:
                                     "content_length": status_doc.content_length,
                                     "created_at": status_doc.created_at,
                                     "updated_at": datetime.now().isoformat(),
+                                    "timestamp": timestamp.isoformat() if timestamp else None,
                                 }
                             }
                         )
@@ -765,7 +773,7 @@ class LightRAG:
         await asyncio.gather(*batches)
         await self._insert_done()
 
-    async def _process_entity_relation_graph(self, chunk: dict[str, Any]) -> None:
+    async def _process_entity_relation_graph(self, chunk: dict[str, Any], timestamp: datetime | None) -> None:
         try:
             await extract_entities(
                 chunk,
@@ -774,6 +782,7 @@ class LightRAG:
                 relationships_vdb=self.relationships_vdb,
                 llm_response_cache=self.llm_response_cache,
                 global_config=asdict(self),
+                timestamp=timestamp,
             )
         except Exception as e:
             logger.error("Failed to extract entities and relationships")
@@ -847,6 +856,7 @@ class LightRAG:
                 # source_id = entity_data["source_id"]
                 source_chunk_id = entity_data.get("source_id", "UNKNOWN")
                 source_id = chunk_to_source_map.get(source_chunk_id, "UNKNOWN")
+                timestamp = entity_data.get("timestamp", None) # add timestamp
 
                 # Log if source_id is UNKNOWN
                 if source_id == "UNKNOWN":
@@ -859,6 +869,7 @@ class LightRAG:
                     "entity_type": entity_type,
                     "description": description,
                     "source_id": source_id,
+                    "timestamp": timestamp,    # add timestamp
                 }
                 # Insert node data into the knowledge graph
                 await self.chunk_entity_relation_graph.upsert_node(
@@ -876,6 +887,7 @@ class LightRAG:
                 description = relationship_data["description"]
                 keywords = relationship_data["keywords"]
                 weight = relationship_data.get("weight", 1.0)
+                timestamp = relationship_data.get("timestamp", None) # add timestamp
                 # source_id = relationship_data["source_id"]
                 source_chunk_id = relationship_data.get("source_id", "UNKNOWN")
                 source_id = chunk_to_source_map.get(source_chunk_id, "UNKNOWN")
@@ -909,6 +921,7 @@ class LightRAG:
                         "description": description,
                         "keywords": keywords,
                         "source_id": source_id,
+                        "timestamp": timestamp,    # add timestamp
                     },
                 )
                 edge_data: dict[str, str] = {
@@ -916,6 +929,7 @@ class LightRAG:
                     "tgt_id": tgt_id,
                     "description": description,
                     "keywords": keywords,
+                    "timestamp": timestamp,    # add timestamp
                 }
                 all_relationships_data.append(edge_data)
                 update_storage = True
@@ -925,6 +939,7 @@ class LightRAG:
                 compute_mdhash_id(dp["entity_name"], prefix="ent-"): {
                     "content": dp["entity_name"] + dp["description"],
                     "entity_name": dp["entity_name"],
+                    "timestamp": dp["timestamp"],    # add timestamp
                 }
                 for dp in all_entities_data
             }
@@ -939,6 +954,7 @@ class LightRAG:
                     + dp["src_id"]
                     + dp["tgt_id"]
                     + dp["description"],
+                    "timestamp": dp["timestamp"],    # add timestamp
                 }
                 for dp in all_relationships_data
             }

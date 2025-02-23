@@ -12,6 +12,7 @@ from typing import (
     TypeVar,
 )
 import numpy as np
+import datetime
 from .utils import EmbeddingFunc
 from .types import KnowledgeGraph
 
@@ -240,7 +241,8 @@ class DocProcessingStatus:
     """Error message if failed"""
     metadata: dict[str, Any] = field(default_factory=dict)
     """Additional metadata"""
-
+    timestamp: datetime | None = None
+    """Additional metadata"""
 
 @dataclass
 class DocStatusStorage(BaseKVStorage, ABC):

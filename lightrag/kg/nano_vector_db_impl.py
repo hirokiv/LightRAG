@@ -44,16 +44,21 @@ class NanoVectorDBStorage(BaseVectorStorage):
             self.embedding_func.embedding_dim, storage_file=self._client_file_name
         )
 
-    async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
+    async def upsert(self, data: dict[str, dict[str, Any]], current_time=None) -> None:
         logger.info(f"Inserting {len(data)} to {self.namespace}")
         if not data:
             return
 
-        current_time = time.time()
+        if current_time == None:
+            current_time = time.time()
+        else:
+            current_time = current_time
+
         list_data = [
             {
                 "__id__": k,
                 "__created_at__": current_time,
+                "__timestamp__" : data[k]['timestamp'], 
                 **{k1: v1 for k1, v1 in v.items() if k1 in self.meta_fields},
             }
             for k, v in data.items()
@@ -93,6 +98,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 "id": dp["__id__"],
                 "distance": dp["__metrics__"],
                 "created_at": dp.get("__created_at__"),
+                'timestamp': dp.get("__timestamp__"),
             }
             for dp in results
         ]

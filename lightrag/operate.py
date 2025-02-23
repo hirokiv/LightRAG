@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import datetime
 from typing import Any, AsyncIterator
 from collections import Counter, defaultdict
 from .utils import (
@@ -186,6 +187,7 @@ async def _merge_nodes_then_upsert(
     already_entity_types = []
     already_source_ids = []
     already_description = []
+    already_timestamp = []
 
     already_node = await knowledge_graph_inst.get_node(entity_name)
     if already_node is not None:
@@ -194,6 +196,7 @@ async def _merge_nodes_then_upsert(
             split_string_by_multi_markers(already_node["source_id"], [GRAPH_FIELD_SEP])
         )
         already_description.append(already_node["description"])
+        already_timestamp.append(already_node.get("timestamp", None))
 
     entity_type = sorted(
         Counter(
@@ -211,10 +214,14 @@ async def _merge_nodes_then_upsert(
     description = await _handle_entity_relation_summary(
         entity_name, description, global_config
     )
+    timestamp = GRAPH_FIELD_SEP.join(
+        set([dp["timestamp"] for dp in nodes_data] + already_timestamp)
+    )
     node_data = dict(
         entity_type=entity_type,
         description=description,
         source_id=source_id,
+        timestamp=timestamp,
     )
     await knowledge_graph_inst.upsert_node(
         entity_name,
@@ -235,6 +242,7 @@ async def _merge_edges_then_upsert(
     already_source_ids = []
     already_description = []
     already_keywords = []
+    already_timestamp = []
 
     if await knowledge_graph_inst.has_edge(src_id, tgt_id):
         already_edge = await knowledge_graph_inst.get_edge(src_id, tgt_id)
@@ -263,8 +271,14 @@ async def _merge_edges_then_upsert(
                     )
                 )
 
+            # Get timestamp with empty string default if missing or None
+            already_timestamp.append(already_edge.get("timestamp", None))
+
     # Process edges_data with None checks
     weight = sum([dp["weight"] for dp in edges_data] + already_weights)
+    # time stamp should be identical for one iteration
+    timestamps = [dp["timestamp"] for dp in edges_data if dp.get("timestamp")] + already_timestamp
+    timestamp = GRAPH_FIELD_SEP.join(sorted(set(timestamps)))
     description = GRAPH_FIELD_SEP.join(
         sorted(
             set(
@@ -296,6 +310,7 @@ async def _merge_edges_then_upsert(
                     "source_id": source_id,
                     "description": description,
                     "entity_type": '"UNKNOWN"',
+                    "timestamp": timestamp,
                 },
             )
     description = await _handle_entity_relation_summary(
@@ -309,6 +324,7 @@ async def _merge_edges_then_upsert(
             description=description,
             keywords=keywords,
             source_id=source_id,
+            timestamp=timestamp,
         ),
     )
 
@@ -317,6 +333,7 @@ async def _merge_edges_then_upsert(
         tgt_id=tgt_id,
         description=description,
         keywords=keywords,
+        timestamp=timestamp,
     )
 
     return edge_data
@@ -329,6 +346,7 @@ async def extract_entities(
     relationships_vdb: BaseVectorStorage,
     global_config: dict[str, str],
     llm_response_cache: BaseKVStorage | None = None,
+    timestamp: datetime | None = None, # add timestamp
 ) -> None:
     use_llm_func: callable = global_config["llm_model_func"]
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
@@ -504,8 +522,12 @@ async def extract_entities(
     maybe_edges = defaultdict(list)
     for m_nodes, m_edges in results:
         for k, v in m_nodes.items():
+            for node in v:
+                node["timestamp"] = timestamp.isoformat() if timestamp else None
             maybe_nodes[k].extend(v)
         for k, v in m_edges.items():
+            for edge in v:
+                edge["timestamp"] = timestamp.isoformat() if timestamp else None
             maybe_edges[tuple(sorted(k))].extend(v)
 
     all_entities_data = await asyncio.gather(
@@ -521,6 +543,14 @@ async def extract_entities(
             for k, v in maybe_edges.items()
         ]
     )
+
+    # Add timestamp to all_entities_data and all_relationships_data
+    # for entity in all_entities_data:
+    #     entity["timestamp"] = timestamp.isoformat() if timestamp else None
+
+    # for relationship in all_relationships_data:
+    #     relationship["timestamp"] = timestamp.isoformat() if timestamp else None
+
 
     if not (all_entities_data or all_relationships_data):
         logger.info("Didn't extract any entities and relationships.")
@@ -540,6 +570,7 @@ async def extract_entities(
             compute_mdhash_id(dp["entity_name"], prefix="ent-"): {
                 "content": dp["entity_name"] + dp["description"],
                 "entity_name": dp["entity_name"],
+                "timestamp": dp["timestamp"],
             }
             for dp in all_entities_data
         }
@@ -555,8 +586,9 @@ async def extract_entities(
                 + dp["tgt_id"]
                 + dp["description"],
                 "metadata": {
-                    "created_at": dp.get("metadata", {}).get("created_at", time.time())
+                    "created_at": dp.get("metadata", {}).get("created_at", time.time()),
                 },
+                "timestamp": dp["timestamp"],  # Add timestamp to relationship data
             }
             for dp in all_relationships_data
         }
